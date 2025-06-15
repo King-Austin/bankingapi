@@ -1,32 +1,18 @@
-# Core Banking API Dependencies
-Django==5.2.2
+# Minimal Banking API Dependencies - Optimized for Development & Production
+
+# Core Django Framework
+Django==5.1.7
 djangorestframework==3.15.2
-
-# Environment & Configuration
-python-decouple==3.8
-dj-database-url==2.1.0
-
-# Database
-psycopg2-binary==2.9.9
 
 # Authentication & Security
 djangorestframework-simplejwt==5.3.0
-cryptography==43.0.1
 
-# API Enhancement
+# CORS for Frontend Integration
 django-cors-headers==4.6.0
-django-filter==24.3
+
 
 # Production Server
 gunicorn==21.2.0
+
+# Static Files Management
 whitenoise==6.6.0
-
-# Monitoring & Logging
-sentry-sdk[django]==1.40.6
-
-# Optional (uncomment when needed):
-# Pillow==10.4.0              # For image uploads (profile pics, document verification)
-# qrcode==8.0                 # For QR code payments
-# celery==5.4.0               # For background tasks (notifications, scheduled payments)
-# redis==5.2.0                # Message broker for Celery
-# django-extensions==3.2.3    # Development tools
