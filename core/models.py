@@ -19,6 +19,8 @@ class User(AbstractUser):
     national_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
     is_verified = models.BooleanField(default=False)
     two_factor_enabled = models.BooleanField(default=False)
+    # This field will store the salted and hashed transaction PIN.
+    transaction_pin_hash = models.CharField(max_length=128, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -68,7 +70,6 @@ class BankAccount(models.Model):
     available_balance = models.DecimalField(max_digits=15, decimal_places=2, default=0.00)
     status = models.CharField(max_length=10, choices=ACCOUNT_STATUS_CHOICES, default='ACTIVE')
     is_primary = models.BooleanField(default=False)
-    pin = models.CharField(max_length=6, null=True, blank=True)  # Encrypted in production
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -17,6 +17,7 @@ eggs/
 lib/
 lib60/
 parts/
+migrations/
 sdist/
 var/
 wheels/
