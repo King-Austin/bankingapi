@@ -1,31 +1,99 @@
 from django.db import models
-from django.contrib.auth.models import AbstractUser
-from django.core.validators import MinValueValidator, MaxValueValidator
+from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.core.validators import MinValueValidator
 from django.utils import timezone
 from decimal import Decimal
 import uuid
 import random
 import string
+from django.contrib.auth.hashers import make_password, check_password
+
+
+class UserManager(BaseUserManager):
+    """Define a model manager for User model with no username field."""
+
+    use_in_migrations = True
+
+    def _create_user(self, email, password, **extra_fields):
+        """Create and save a User with the given email and password."""
+        if not email:
+            raise ValueError('The given email must be set')
+        email = self.normalize_email(email)
+        user = self.model(email=email, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
+    def create_user(self, email, password=None, **extra_fields):
+        """Create and save a regular User with the given email and password."""
+        extra_fields.setdefault('is_staff', False)
+        extra_fields.setdefault('is_superuser', False)
+        return self._create_user(email, password, **extra_fields)
+
+    def create_superuser(self, email, password, **extra_fields):
+        """Create and save a SuperUser with the given email and password."""
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+
+        if extra_fields.get('is_staff') is not True:
+            raise ValueError('Superuser must have is_staff=True.')
+        if extra_fields.get('is_superuser') is not True:
+            raise ValueError('Superuser must have is_superuser=True.')
+
+        return self._create_user(email, password, **extra_fields)
 
 
 class User(AbstractUser):
     """
-    Custom User model extending Django's AbstractUser
+    Custom User model for the passwordless system.
+    - Email is the unique identifier.
+    - `public_key` stores the user's cryptographic key for authentication.
+    - `transaction_pin_hash` stores the hash for transaction authorization.
     """
+    # Remove username and use email as the primary identifier
+    username = None
+    email = models.EmailField(unique=True)
+
+    # Personal and contact information
+    first_name = models.CharField(max_length=150, blank=False)
+    last_name = models.CharField(max_length=150, blank=False)
     phone_number = models.CharField(max_length=15, unique=True)
-    email = models.EmailField(unique=True)  # Make email unique
     date_of_birth = models.DateField(null=True, blank=True)
     address = models.TextField(blank=True)
-    national_id = models.CharField(max_length=20, unique=True, null=True, blank=True)
-    is_verified = models.BooleanField(default=False)
-    two_factor_enabled = models.BooleanField(default=False)
-    # This field will store the salted and hashed transaction PIN.
+    occupation = models.CharField(max_length=100, blank=True)
+    nin = models.CharField(
+        max_length=11,
+        unique=True,
+        help_text="Nigerian National Identification Number",
+        null=True,
+        blank=True
+    )
+
+    # Security fields
+    public_key = models.TextField(unique=True, blank=True, null=True)
     transaction_pin_hash = models.CharField(max_length=128, blank=True, null=True)
+    is_verified = models.BooleanField(default=False)
+
+    # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = ['first_name', 'last_name', 'phone_number']  # removed 'nin' temporarily to avoid migration issues
+
+    objects = UserManager()
+
     def __str__(self):
-        return f"{self.username} - {self.get_full_name()}"
+        return self.email
+
+    def set_pin(self, raw_pin):
+        """Hashes and sets the transaction PIN."""
+        self.transaction_pin_hash = make_password(raw_pin)
+        self.save()
+
+    def verify_pin(self, raw_pin):
+        """Verifies a raw PIN against the stored hash."""
+        return check_password(raw_pin, self.transaction_pin_hash)
 
     class Meta:
         db_table = 'users'
@@ -95,11 +163,11 @@ class BankAccount(models.Model):
             return ''.join(random.choices(string.digits, k=10))
 
     def __str__(self):
-        return f"{self.user.username} - {self.account_number}"
+        return f"{self.user.email} - {self.account_number}"
 
     class Meta:
         db_table = 'bank_accounts'
-        unique_together = ['user', 'is_primary']
+        unique_together = ('user', 'is_primary')
 
 
 class TransactionCategory(models.Model):
@@ -184,117 +252,4 @@ class Transaction(models.Model):
 
     class Meta:
         db_table = 'transactions'
-        ordering = ['-created_at']
-
-
-class Beneficiary(models.Model):
-    """
-    Saved beneficiaries for easy transfers
-    """
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='beneficiaries')
-    account_number = models.CharField(max_length=20)
-    account_name = models.CharField(max_length=100)
-    bank_name = models.CharField(max_length=100, default='SecureCipher Bank')
-    nickname = models.CharField(max_length=50, blank=True)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        return f"{self.account_name} - {self.account_number}"
-
-    class Meta:
-        db_table = 'beneficiaries'
-        unique_together = ['user', 'account_number']
-
-
-class Card(models.Model):
-    """
-    Bank cards (Debit/Credit cards)
-    """
-    CARD_TYPE_CHOICES = [
-        ('DEBIT', 'Debit Card'),
-        ('CREDIT', 'Credit Card'),
-    ]
-
-    CARD_STATUS_CHOICES = [
-        ('ACTIVE', 'Active'),
-        ('BLOCKED', 'Blocked'),
-        ('EXPIRED', 'Expired'),
-        ('CANCELLED', 'Cancelled'),
-    ]
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    account = models.ForeignKey(BankAccount, on_delete=models.CASCADE, related_name='cards')
-    card_number = models.CharField(max_length=16, unique=True, editable=False)
-    card_type = models.CharField(max_length=6, choices=CARD_TYPE_CHOICES)
-    cardholder_name = models.CharField(max_length=100)
-    expiry_date = models.DateField()
-    cvv = models.CharField(max_length=3, editable=False)
-    pin = models.CharField(max_length=4, editable=False)
-    status = models.CharField(max_length=10, choices=CARD_STATUS_CHOICES, default='ACTIVE')
-    daily_limit = models.DecimalField(max_digits=10, decimal_places=2, default=100000.00)
-    is_international = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def save(self, *args, **kwargs):
-        if not self.card_number:
-            self.card_number = self.generate_card_number()
-        if not self.cvv:
-            self.cvv = self.generate_cvv()
-        if not self.pin:
-            self.pin = self.generate_pin()
-        super().save(*args, **kwargs)
-
-    def generate_card_number(self):
-        """Generate a unique 16-digit card number"""
-        while True:
-            card_number = '4' + ''.join(random.choices(string.digits, k=15))  # Starts with 4 (Visa)
-            if not Card.objects.filter(card_number=card_number).exists():
-                return card_number
-
-    def generate_cvv(self):
-        """Generate a 3-digit CVV"""
-        return ''.join(random.choices(string.digits, k=3))
-
-    def generate_pin(self):
-        """Generate a 4-digit PIN"""
-        return ''.join(random.choices(string.digits, k=4))
-
-    def __str__(self):
-        return f"{self.cardholder_name} - ****{self.card_number[-4:]}"
-
-    class Meta:
-        db_table = 'cards'
-
-
-class AuditLog(models.Model):
-    """
-    Audit log for tracking user actions
-    """
-    ACTION_TYPE_CHOICES = [
-        ('LOGIN', 'Login'),
-        ('LOGOUT', 'Logout'),
-        ('TRANSACTION', 'Transaction'),
-        ('ACCOUNT_UPDATE', 'Account Update'),
-        ('PASSWORD_CHANGE', 'Password Change'),
-        ('CARD_OPERATION', 'Card Operation'),
-        ('BENEFICIARY_OP', 'Beneficiary Operation'),
-    ]
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
-    action_type = models.CharField(max_length=25, choices=ACTION_TYPE_CHOICES)
-    description = models.TextField()
-    ip_address = models.GenericIPAddressField(null=True, blank=True)
-    user_agent = models.TextField(null=True, blank=True)
-    additional_data = models.JSONField(null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return f"{self.user} - {self.action_type} - {self.created_at}"
-
-    class Meta:
-        db_table = 'audit_logs'
         ordering = ['-created_at']

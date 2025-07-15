@@ -2,23 +2,38 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from .models import (
     User, AccountType, BankAccount, TransactionCategory, 
-    Transaction, Beneficiary, Card, AuditLog
+    Transaction
 )
 
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):
-    list_display = ('username', 'email', 'first_name', 'last_name', 'phone_number', 'is_verified', 'is_staff')
+    # Override default ordering (username removed)
+    ordering = ('email',)
+    list_display = ('email', 'first_name', 'last_name', 'phone_number', 'nin', 'is_verified', 'is_staff')
     list_filter = ('is_staff', 'is_superuser', 'is_active', 'is_verified', 'date_joined')
-    search_fields = ('username', 'first_name', 'last_name', 'email', 'phone_number')
+    search_fields = ('first_name', 'last_name', 'email', 'phone_number', 'nin')
     readonly_fields = ('date_joined', 'last_login', 'created_at', 'updated_at')
     
-    fieldsets = UserAdmin.fieldsets + (
-        ('Additional Info', {
-            'fields': ('phone_number', 'date_of_birth', 'address', 'national_id', 'is_verified', 'two_factor_enabled')
+    fieldsets = (
+        (None, {"fields": ("email", "password")}),
+        ("Personal info", {"fields": ("first_name", "last_name", "date_of_birth", "phone_number", "address", "occupation", "nin")}),
+        ("Permissions", {
+            "fields": (
+                "is_active",
+                "is_staff",
+                "is_superuser",
+                "groups",
+                "user_permissions",
+            ),
         }),
-        ('Timestamps', {
-            'fields': ('created_at', 'updated_at')
+        ("Security", {"fields": ("public_key", "transaction_pin_hash", "is_verified")}),
+        ("Important dates", {"fields": ("last_login", "date_joined", "created_at", "updated_at")}),
+    )
+    add_fieldsets = (
+        (None, {
+            "classes": ("wide",),
+            "fields": ("email", "first_name", "last_name", "phone_number", "nin", "password", "password2"),
         }),
     )
 
@@ -35,7 +50,7 @@ class AccountTypeAdmin(admin.ModelAdmin):
 class BankAccountAdmin(admin.ModelAdmin):
     list_display = ('account_number', 'user', 'account_type', 'balance', 'status', 'is_primary', 'created_at')
     list_filter = ('status', 'account_type', 'is_primary', 'created_at')
-    search_fields = ('account_number', 'user__username', 'user__email')
+    search_fields = ('account_number', 'user__email')
     readonly_fields = ('id', 'account_number', 'created_at', 'updated_at')
     raw_id_fields = ('user',)
 
@@ -55,46 +70,3 @@ class TransactionAdmin(admin.ModelAdmin):
     readonly_fields = ('id', 'reference_number', 'created_at', 'updated_at')
     raw_id_fields = ('account',)
     date_hierarchy = 'created_at'
-
-
-@admin.register(Beneficiary)
-class BeneficiaryAdmin(admin.ModelAdmin):
-    list_display = ('account_name', 'user', 'account_number', 'bank_name', 'is_active', 'created_at')
-    list_filter = ('bank_name', 'is_active', 'created_at')
-    search_fields = ('account_name', 'account_number', 'user__username', 'nickname')
-    raw_id_fields = ('user',)
-
-
-@admin.register(Card)
-class CardAdmin(admin.ModelAdmin):
-    list_display = ('cardholder_name', 'card_type', 'status', 'expiry_date', 'daily_limit', 'created_at')
-    list_filter = ('card_type', 'status', 'expiry_date', 'created_at')
-    search_fields = ('cardholder_name', 'account__account_number', 'account__user__username')
-    readonly_fields = ('id', 'card_number', 'cvv', 'pin', 'created_at', 'updated_at')
-    raw_id_fields = ('account',)
-
-    def masked_card_number(self, obj):
-        return f"****{obj.card_number[-4:]}" if obj.card_number else "No card number"
-    masked_card_number.short_description = "Card Number"
-
-    def get_readonly_fields(self, request, obj=None):
-        readonly_fields = list(super().get_readonly_fields(request, obj))
-        if obj:  # Editing existing object
-            readonly_fields.extend(['card_number', 'cvv', 'pin'])
-        return readonly_fields
-
-
-@admin.register(AuditLog)
-class AuditLogAdmin(admin.ModelAdmin):
-    list_display = ('user', 'action_type', 'description', 'ip_address', 'created_at')
-    list_filter = ('action_type', 'created_at')
-    search_fields = ('user__username', 'description', 'ip_address')
-    readonly_fields = ('id', 'created_at')
-    raw_id_fields = ('user',)
-    date_hierarchy = 'created_at'
-
-    def has_add_permission(self, request):
-        return False  # Audit logs should not be manually created
-
-    def has_change_permission(self, request, obj=None):
-        return False  # Audit logs should not be modified
