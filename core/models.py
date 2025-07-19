@@ -71,8 +71,7 @@ class User(AbstractUser):
 
     # Security fields
     public_key = models.TextField(unique=True, blank=True, null=True)
-    transaction_pin_hash = models.CharField(max_length=128, blank=True, null=True)
-    is_verified = models.BooleanField(default=False)
+    is_verified = models.BooleanField(default=True)
 
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)

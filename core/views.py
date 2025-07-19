@@ -1,7 +1,6 @@
 from rest_framework import status, viewsets, permissions
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework_simplejwt.tokens import RefreshToken
 from django.db import transaction
 from django.utils import timezone
 from .models import User, BankAccount, Transaction, TransactionCategory
@@ -11,6 +10,9 @@ from .serializers import (
     SetTransactionPINSerializer, VerifyTransactionPINSerializer
 )
 from .utils import verbose_logging
+from .crypto_utils import CryptoUtils
+from django.conf import settings
+import json
 
 
 @api_view(['GET'])
@@ -44,11 +46,10 @@ class AuthViewSet(viewsets.GenericViewSet):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         
-        refresh = RefreshToken.for_user(user)
         return Response({
             'message': 'User registered successfully.',
-            'access': str(refresh.access_token),
-            'refresh': str(refresh),
+            'user': UserProfileSerializer(user).data,
+
         }, status=status.HTTP_201_CREATED)
 
     @action(detail=False, methods=['post'], serializer_class=LoginSerializer)
@@ -61,24 +62,15 @@ class AuthViewSet(viewsets.GenericViewSet):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
         
-        refresh = RefreshToken.for_user(user)
         return Response({
-            'access': str(refresh.access_token),
-            'refresh': str(refresh),
             'user': UserProfileSerializer(user).data
         })
 
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     @verbose_logging
     def logout(self, request):
-        """Blacklists the user's refresh token."""
-        try:
-            refresh_token = request.data["refresh"]
-            token = RefreshToken(refresh_token)
-            token.blacklist()
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        except Exception:
-            return Response({'error': 'Invalid or missing refresh token.'}, status=status.HTTP_400_BAD_REQUEST)
+        """Logout endpoint is not used in this cryptographic system (no JWT)."""
+        return Response({'message': 'Logout not required in this system.'}, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated], serializer_class=SetTransactionPINSerializer)
     @verbose_logging
@@ -115,66 +107,126 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
 
 class BankAccountViewSet(viewsets.ReadOnlyModelViewSet):
     """Provides read-only access to a user's bank accounts."""
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]  # Crypto will handle auth
     serializer_class = BankAccountSerializer
 
     def get_queryset(self):
-        return BankAccount.objects.filter(user=self.request.user)
+        # User is determined by public key in the request
+        return BankAccount.objects.none()  # Will be set after crypto auth
+
+    def initial(self, request, *args, **kwargs):
+        # Unified cryptographic verification and decryption
+        encrypted_payload = request.data.get('payload')
+        signature = request.data.get('signature')
+        client_pubkey = request.data.get('client_pubkey')
+        if not (encrypted_payload and signature and client_pubkey):
+            return Response({'error': 'Missing cryptographic fields.'}, status=status.HTTP_400_BAD_REQUEST)
+        # Verify signature
+        if not CryptoUtils.verify_signature(client_pubkey, encrypted_payload.encode(), signature):
+            return Response({'error': 'Invalid signature.'}, status=status.HTTP_401_UNAUTHORIZED)
+        # Derive session key
+        session_key = CryptoUtils.derive_session_key(
+            CryptoUtils.get_server_private_key(), client_pubkey
+        )
+        # Decrypt payload
+        try:
+            decrypted = CryptoUtils.decrypt(encrypted_payload, session_key)
+            request._decrypted_data = json.loads(decrypted.decode())
+        except Exception as e:
+            return Response({'error': f'Decryption failed: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+        # Set user for queryset
+        user = CryptoUtils.get_user_by_public_key(client_pubkey)
+        if not user:
+            return Response({'error': 'Unknown client public key.'}, status=status.HTTP_401_UNAUTHORIZED)
+        request.user = user
+        return super().initial(request, *args, **kwargs)
+
+    def list(self, request, *args, **kwargs):
+        # Use decrypted data if needed
+        self.queryset = BankAccount.objects.filter(user=request.user)
+        response = super().list(request, *args, **kwargs)
+        # Encrypt and sign response
+        session_key = CryptoUtils.derive_session_key(
+            CryptoUtils.get_server_private_key(), request.data.get('client_pubkey')
+        )
+        encrypted = CryptoUtils.encrypt(json.dumps(response.data).encode(), session_key)
+        signature = CryptoUtils.sign_message(CryptoUtils.get_server_private_key(), encrypted.encode())
+        return Response({'payload': encrypted, 'signature': signature, 'server_pubkey': CryptoUtils.get_server_public_key()})
 
     @action(detail=True, methods=['get'])
     @verbose_logging
     def transactions(self, request, pk=None):
-        """Gets all transactions for a specific account."""
         account = self.get_object()
         transactions = Transaction.objects.filter(account=account).order_by('-created_at')
         serializer = TransactionSerializer(transactions, many=True)
-        return Response(serializer.data)
+        # Encrypt and sign response
+        session_key = CryptoUtils.derive_session_key(
+            CryptoUtils.get_server_private_key(), request.data.get('client_pubkey')
+        )
+        encrypted = CryptoUtils.encrypt(json.dumps(serializer.data).encode(), session_key)
+        signature = CryptoUtils.sign_message(CryptoUtils.get_server_private_key(), encrypted.encode())
+        return Response({'payload': encrypted, 'signature': signature, 'server_pubkey': CryptoUtils.get_server_public_key()})
 
 
 class TransactionViewSet(viewsets.GenericViewSet):
     """Handles listing transactions and making transfers."""
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
     serializer_class = TransactionSerializer
 
     def get_queryset(self):
-        return Transaction.objects.filter(account__user=self.request.user)
+        return Transaction.objects.none()  # Will be set after crypto auth
+
+    def initial(self, request, *args, **kwargs):
+        encrypted_payload = request.data.get('payload')
+        signature = request.data.get('signature')
+        client_pubkey = request.data.get('client_pubkey')
+        if not (encrypted_payload and signature and client_pubkey):
+            return Response({'error': 'Missing cryptographic fields.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not CryptoUtils.verify_signature(client_pubkey, encrypted_payload.encode(), signature):
+            return Response({'error': 'Invalid signature.'}, status=status.HTTP_401_UNAUTHORIZED)
+        session_key = CryptoUtils.derive_session_key(
+            CryptoUtils.get_server_private_key(), client_pubkey
+        )
+        try:
+            decrypted = CryptoUtils.decrypt(encrypted_payload, session_key)
+            request._decrypted_data = json.loads(decrypted.decode())
+        except Exception as e:
+            return Response({'error': f'Decryption failed: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+        user = CryptoUtils.get_user_by_public_key(client_pubkey)
+        if not user:
+            return Response({'error': 'Unknown client public key.'}, status=status.HTTP_401_UNAUTHORIZED)
+        request.user = user
+        return super().initial(request, *args, **kwargs)
 
     @action(detail=False, methods=['get'], url_path='all')
     @verbose_logging
     def list_transactions(self, request):
-        """Lists all transactions for the authenticated user."""
-        queryset = self.get_queryset().order_by('-created_at')
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
+        self.queryset = Transaction.objects.filter(account__user=request.user).order_by('-created_at')
+        response = super().list(request)
+        session_key = CryptoUtils.derive_session_key(
+            CryptoUtils.get_server_private_key(), request.data.get('client_pubkey')
+        )
+        encrypted = CryptoUtils.encrypt(json.dumps(response.data).encode(), session_key)
+        signature = CryptoUtils.sign_message(CryptoUtils.get_server_private_key(), encrypted.encode())
+        return Response({'payload': encrypted, 'signature': signature, 'server_pubkey': CryptoUtils.get_server_public_key()})
 
     @action(detail=False, methods=['post'], serializer_class=TransferSerializer)
     @verbose_logging
     def transfer(self, request):
-        """
-        Handles a secure, atomic fund transfer between accounts.
-        PIN verification is handled within the serializer.
-        """
-        serializer = self.get_serializer(data=request.data, context={'request': request})
+        # Use decrypted data for transfer
+        serializer = self.get_serializer(data=request._decrypted_data, context={'request': request})
         serializer.is_valid(raise_exception=True)
-        
         source_account = serializer.validated_data['source_account']
         destination_account = serializer.validated_data['destination_account']
         amount = serializer.validated_data['amount']
         description = serializer.validated_data.get('description', 'Fund Transfer')
-
         try:
             with transaction.atomic():
-                # Perform the debit and credit
                 source_account.balance -= amount
                 source_account.save()
-
                 destination_account.balance += amount
                 destination_account.save()
-
-                # Get or create the 'Transfer' category
                 transfer_category, _ = TransactionCategory.objects.get_or_create(name='Transfer')
-
-                # Create transaction records for both parties
                 Transaction.objects.create(
                     account=source_account,
                     transaction_type='DEBIT',
@@ -195,14 +247,12 @@ class TransactionViewSet(viewsets.GenericViewSet):
                     balance_before=destination_account.balance - amount,
                     balance_after=destination_account.balance
                 )
-
-            return Response({
-                'message': 'Transfer successful.',
-                'source_account_balance': source_account.balance
-            }, status=status.HTTP_200_OK)
-
-        except Exception as e:
-            return Response(
-                {'error': f'An unexpected error occurred during the transfer: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            session_key = CryptoUtils.derive_session_key(
+                CryptoUtils.get_server_private_key(), request.data.get('client_pubkey')
             )
+            resp = {'message': 'Transfer successful.', 'source_account_balance': source_account.balance}
+            encrypted = CryptoUtils.encrypt(json.dumps(resp).encode(), session_key)
+            signature = CryptoUtils.sign_message(CryptoUtils.get_server_private_key(), encrypted.encode())
+            return Response({'payload': encrypted, 'signature': signature, 'server_pubkey': CryptoUtils.get_server_public_key()}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'error': f'An unexpected error occurred during the transfer: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

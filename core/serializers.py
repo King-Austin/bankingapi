@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from django.db import transaction as db_transaction
 from decimal import Decimal
+import hashlib
 from .models import (
     User, BankAccount, Transaction, AccountType, TransactionCategory
 )
@@ -31,11 +32,19 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         """
         Creates the User, a default BankAccount, and a welcome bonus transaction.
+        Sets the user password as the SHA-256 hash of the public key for consistency with Django's user model.
         """
+        public_key = validated_data.get('public_key')
+        if not public_key:
+            raise serializers.ValidationError({'public_key': 'Public key is required.'})
+        # Hash the public key (SHA-256)
+        pubkey_hash = hashlib.sha256(public_key.encode('utf-8')).hexdigest()
+        # Set the password to the hash of the public key
+        validated_data['password'] = pubkey_hash
         with db_transaction.atomic():
-            # Create the user instance
             user = User.objects.create(**validated_data)
-            
+            user.set_password(pubkey_hash)
+            user.save()
             # Get or create a default 'Savings' account type
             account_type, _ = AccountType.objects.get_or_create(
                 name='Savings',
