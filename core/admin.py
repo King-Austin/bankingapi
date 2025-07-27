@@ -6,37 +6,6 @@ from .models import (
 )
 
 
-@admin.register(User)
-class CustomUserAdmin(UserAdmin):
-    # Override default ordering (username removed)
-    ordering = ('email',)
-    list_display = ('email', 'first_name', 'last_name', 'phone_number', 'nin', 'is_verified', 'is_staff')
-    list_filter = ('is_staff', 'is_superuser', 'is_active', 'is_verified', 'date_joined')
-    search_fields = ('first_name', 'last_name', 'email', 'phone_number', 'nin')
-    readonly_fields = ('date_joined', 'last_login', 'created_at', 'updated_at')
-    
-    fieldsets = (
-        (None, {"fields": ("email", "password")}),
-        ("Personal info", {"fields": ("first_name", "last_name", "date_of_birth", "phone_number", "address", "occupation", "nin")}),
-        ("Permissions", {
-            "fields": (
-                "is_active",
-                "is_staff",
-                "is_superuser",
-                "groups",
-                "user_permissions",
-            ),
-        }),
-        ("Security", {"fields": ("public_key", "transaction_pin_hash", "is_verified")}),
-        ("Important dates", {"fields": ("last_login", "date_joined", "created_at", "updated_at")}),
-    )
-    add_fieldsets = (
-        (None, {
-            "classes": ("wide",),
-            "fields": ("email", "first_name", "last_name", "phone_number", "nin", "password", "password2"),
-        }),
-    )
-
 
 @admin.register(AccountType)
 class AccountTypeAdmin(admin.ModelAdmin):

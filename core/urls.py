@@ -1,18 +1,11 @@
-from django.urls import path, include
-from rest_framework.routers import DefaultRouter
+from django.urls import path
 from .views import (
-    AuthViewSet, UserViewSet, BankAccountViewSet, TransactionViewSet,
-    health_check
+    RegisterView, LoginView, ValidateAccountView, TransferView
 )
 
-router = DefaultRouter()
-router.register(r'auth', AuthViewSet, basename='auth')
-router.register(r'user', UserViewSet, basename='user')
-router.register(r'accounts', BankAccountViewSet, basename='bankaccount')
-router.register(r'transactions', TransactionViewSet, basename='transaction')
-
-
 urlpatterns = [
-    path('', include(router.urls)),
-    path('health/', health_check, name='health_check'),
+    path('register/', RegisterView.as_view(), name='register'),
+    path('login/', LoginView.as_view(), name='login'),
+    path('validate_account/', ValidateAccountView.as_view(), name='validate_account'),
+    path('transfer/', TransferView.as_view(), name='transfer'),
 ]

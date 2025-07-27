@@ -1,10 +1,9 @@
 from rest_framework import serializers
-from django.contrib.auth import authenticate
 from django.db import transaction as db_transaction
 from decimal import Decimal
 import hashlib
 from .models import (
-    User, BankAccount, Transaction, AccountType, TransactionCategory
+    User, UserProfile, BankAccount, Transaction, AccountType, TransactionCategory
 )
 
 
@@ -14,29 +13,37 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     default bank account. This serializer is designed to match the
     consolidated User model and the frontend registration form.
     """
-    # The `public_key` is submitted by the client but not part of the User model's own fields.
-    # It's handled in the view or a higher-level serializer that composes this one.
-    # For direct use, we expect it to be in the validated_data.
-    
+    # Accepts extra profile fields and public_key
+    public_key = serializers.CharField(write_only=True)
+    phone_number = serializers.CharField()
+    date_of_birth = serializers.DateField()
+    address = serializers.CharField()
+    occupation = serializers.CharField()
+    nin = serializers.CharField()
+    bvn = serializers.CharField()
+
     class Meta:
         model = User
         # These fields are expected from the client, matching the consolidated User model
         fields = (
-            'email', 'first_name', 'last_name', 'phone_number', 
-            'date_of_birth', 'address', 'occupation', 'public_key', 'nin'
+            'username', 'email', 'first_name', 'last_name',
+            'public_key', 'phone_number', 'date_of_birth', 'address',
+            'occupation', 'nin', 'bvn'
         )
-        extra_kwargs = {
-            'public_key': {'write_only': True}
-        }
 
     def create(self, validated_data):
         """
         Creates the User, a default BankAccount, and a welcome bonus transaction.
         Sets the user password as the SHA-256 hash of the public key for consistency with Django's user model.
         """
-        public_key = validated_data.get('public_key')
-        if not public_key:
-            raise serializers.ValidationError({'public_key': 'Public key is required.'})
+        public_key = validated_data.pop('public_key')
+        phone_number = validated_data.pop('phone_number')
+        date_of_birth = validated_data.pop('date_of_birth')
+        address = validated_data.pop('address')
+        occupation = validated_data.pop('occupation')
+        nin = validated_data.pop('nin')
+        bvn = validated_data.pop('bvn')
+
         # Hash the public key (SHA-256)
         pubkey_hash = hashlib.sha256(public_key.encode('utf-8')).hexdigest()
         # Set the password to the hash of the public key
@@ -45,6 +52,16 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             user = User.objects.create(**validated_data)
             user.set_password(pubkey_hash)
             user.save()
+            profile = UserProfile.objects.create(
+                user=user,
+                phone_number=phone_number,
+                date_of_birth=date_of_birth,
+                address=address,
+                occupation=occupation,
+                nin=nin,
+                bvn=bvn,
+                public_key=public_key
+            )
             # Get or create a default 'Savings' account type
             account_type, _ = AccountType.objects.get_or_create(
                 name='Savings',
@@ -91,11 +108,13 @@ class UserProfileSerializer(serializers.ModelSerializer):
     """
     Serializer for displaying the user's profile information.
     """
+    user = serializers.StringRelatedField()
+
     class Meta:
-        model = User
+        model = UserProfile
         fields = (
-            'id', 'email', 'first_name', 'last_name', 'phone_number', 
-            'date_of_birth', 'address', 'occupation', 'is_verified', 'date_joined'
+            'id', 'user', 'phone_number', 'date_of_birth', 'address',
+            'occupation', 'nin', 'bvn', 'public_key', 'is_verified', 'created_at', 'updated_at'
         )
         read_only_fields = fields
 
@@ -110,55 +129,13 @@ class LoginSerializer(serializers.Serializer):
     def validate(self, attrs):
         public_key = attrs.get('public_key')
         try:
-            user = User.objects.get(public_key=public_key, is_active=True)
-        except User.DoesNotExist:
+            profile = UserProfile.objects.get(public_key=public_key, user__is_active=True)
+            user = profile.user
+        except UserProfile.DoesNotExist:
             raise serializers.ValidationError('No active user found with the provided public key.')
         
         attrs['user'] = user
         return attrs
-
-
-class SetTransactionPINSerializer(serializers.Serializer):
-    """
-    Serializer for setting or changing the transaction PIN.
-    """
-    pin = serializers.CharField(
-        write_only=True, required=True, style={'input_type': 'password'},
-        min_length=4, max_length=4
-    )
-    pin_confirm = serializers.CharField(
-        write_only=True, required=True, style={'input_type': 'password'}
-    )
-
-    def validate(self, attrs):
-        if attrs['pin'] != attrs['pin_confirm']:
-            raise serializers.ValidationError({"pin_confirm": "PINs do not match."})
-        if not attrs['pin'].isdigit():
-            raise serializers.ValidationError({"pin": "PIN must be numeric and 4 digits long."})
-        return attrs
-
-    def save(self):
-        user = self.context['request'].user
-        user.set_pin(self.validated_data['pin'])
-
-
-class VerifyTransactionPINSerializer(serializers.Serializer):
-    """
-    Serializer for verifying the transaction PIN for an action.
-    """
-    pin = serializers.CharField(
-        write_only=True, required=True, style={'input_type': 'password'},
-        min_length=4, max_length=4
-    )
-
-    def validate_pin(self, value):
-        if not value.isdigit():
-            raise serializers.ValidationError("PIN must be numeric.")
-        
-        user = self.context['request'].user
-        if not user.verify_pin(value):
-            raise serializers.ValidationError("Invalid transaction PIN.")
-        return value
 
 
 class BankAccountSerializer(serializers.ModelSerializer):
@@ -194,19 +171,18 @@ class TransferSerializer(serializers.Serializer):
     destination_account_number = serializers.CharField(max_length=20)
     amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
     description = serializers.CharField(required=False, allow_blank=True, max_length=100)
-    pin = serializers.CharField(write_only=True, required=True, min_length=4, max_length=4)
 
-    def validate_pin(self, value):
-        """
-        Validates the transaction PIN against the user's stored PIN.
-        """
-        if not value.isdigit():
-            raise serializers.ValidationError("PIN must be numeric.")
+    # def validate_pin(self, value):
+    #     """
+    #     Validates the transaction PIN against the user's stored PIN.
+    #     """
+    #     if not value.isdigit():
+    #         raise serializers.ValidationError("PIN must be numeric.")
         
-        user = self.context['request'].user
-        if not user.verify_pin(value):
-            raise serializers.ValidationError("Invalid transaction PIN.")
-        return value
+    #     user = self.context['request'].user
+    #     if not hasattr(user, 'verify_pin') or not user.verify_pin(value):
+    #         raise serializers.ValidationError("Invalid transaction PIN.")
+    #     return value
 
     def validate(self, attrs):
         user = self.context['request'].user
