@@ -172,3 +172,17 @@ class Transaction(models.Model):
     class Meta:
         db_table = 'transactions'
         ordering = ['-created_at']
+
+
+class ApiKeyPair(models.Model):
+    label = models.CharField(max_length=50, unique=True)
+    public_key = models.TextField()
+    private_key = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'api_key_pairs'
+
+    def __str__(self):
+        return f"{self.label} KeyPair"
