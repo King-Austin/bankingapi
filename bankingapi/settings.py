@@ -170,6 +170,7 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
+AUTH_USER_MODEL = 'core.User'
 # Email Configuration - Console backend for development
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 

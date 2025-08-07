@@ -1,19 +1,18 @@
 from django.db import models
-from django.contrib.auth.models import User  # Use Django's default User model
 from django.core.validators import MinValueValidator
 from django.utils import timezone
 from decimal import Decimal
 import uuid
 import random
 import string
+from django.contrib.auth.models import AbstractUser
 
 
-class UserProfile(models.Model):
+class User(AbstractUser):
     """
-    Extended profile for the default Django User.
-    Stores cryptographic keys and extra personal info.
+    Custom user model extending Django's AbstractUser.
+    Includes extra fields for phone, NIN, BVN, and now account details.
     """
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     phone_number = models.CharField(max_length=15, unique=True)
     date_of_birth = models.DateField(null=True, blank=True)
     address = models.TextField(blank=True)
@@ -33,91 +32,47 @@ class UserProfile(models.Model):
         blank=True
     )
     public_key = models.TextField(unique=True, blank=True, null=True)
-    is_verified = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
-    def __str__(self):
-        return f"{self.user.username} Profile"
-
-    class Meta:
-        db_table = 'user_profiles'
-
-
-class AccountType(models.Model):
-    name = models.CharField(max_length=50, unique=True)
-    description = models.TextField(blank=True)
-    minimum_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
-    interest_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0.00)
-    monthly_fee = models.DecimalField(max_digits=8, decimal_places=2, default=0.00)
-    transaction_limit_daily = models.DecimalField(max_digits=12, decimal_places=2, default=50000.00)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return self.name
-
-    class Meta:
-        db_table = 'account_types'
-
-
-class BankAccount(models.Model):
+    # Account fields (merged from BankAccount)
     ACCOUNT_STATUS_CHOICES = [
         ('ACTIVE', 'Active'),
         ('INACTIVE', 'Inactive'),
         ('SUSPENDED', 'Suspended'),
         ('CLOSED', 'Closed'),
     ]
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='bank_accounts')
-    account_type = models.ForeignKey(AccountType, on_delete=models.PROTECT)
     account_number = models.CharField(max_length=20, unique=True, editable=False)
     balance = models.DecimalField(max_digits=15, decimal_places=2, default=0.00)
-    available_balance = models.DecimalField(max_digits=15, decimal_places=2, default=0.00)
+    account_type = models.CharField(max_length=50, default='Savings')
     status = models.CharField(max_length=10, choices=ACCOUNT_STATUS_CHOICES, default='ACTIVE')
-    is_primary = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
+    is_primary = models.BooleanField(default=True)
+
+    # Other meta data
+    is_verified = models.BooleanField(default=True)
+    created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
-    def save(self, *args, **kwargs):
-        if not self.account_number:
-            self.account_number = self.generate_account_number()
-        super().save(*args, **kwargs)
 
-    def generate_account_number(self):
-        # Use phone number from profile if available
-        profile = getattr(self.user, 'profile', None)
-        phone_number = profile.phone_number if profile else ''
-        phone_digits = phone_number.lstrip('0').replace('+234', '').replace(' ', '').replace('-', '')
-        if len(phone_digits) >= 10:
-            return phone_digits[:10]
-        else:
-            remaining_digits = 10 - len(phone_digits)
-            random_digits = ''.join(random.choices(string.digits, k=remaining_digits))
-            return phone_digits + random_digits
 
     def __str__(self):
-        return f"{self.user.username} - {self.account_number}"
+        return self.username
 
     class Meta:
-        db_table = 'bank_accounts'
-        unique_together = ('user', 'is_primary')
+        db_table = 'user'
 
 
-class TransactionCategory(models.Model):
-    name = models.CharField(max_length=50, unique=True)
-    description = models.TextField(blank=True)
-    icon = models.CharField(max_length=50, blank=True)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+# class TransactionCategory(models.Model):
+#     name = models.CharField(max_length=50, unique=True)
+#     description = models.TextField(blank=True)
+#     icon = models.CharField(max_length=50, blank=True)
+#     is_active = models.BooleanField(default=True)
+#     created_at = models.DateTimeField(auto_now_add=True)
 
-    def __str__(self):
-        return self.name
+#     def __str__(self):
+#         return self.name
 
-    class Meta:
-        db_table = 'transaction_categories'
-        verbose_name_plural = 'Transaction Categories'
+#     class Meta:
+#         db_table = 'transaction_categories'
+#         verbose_name_plural = 'Transaction Categories'
 
 
 class Transaction(models.Model):
@@ -133,10 +88,14 @@ class Transaction(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    account = models.ForeignKey(BankAccount, on_delete=models.CASCADE, related_name='transactions')
+    account = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='transactions',
+        db_column='account_id'
+    )
     transaction_type = models.CharField(max_length=6, choices=TRANSACTION_TYPE_CHOICES)
-    category = models.ForeignKey(TransactionCategory, on_delete=models.PROTECT)
-    amount = models.DecimalField(max_digits=15, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+    amount = models.DecimalField(max_digits=15, decimal_places=2)
     balance_before = models.DecimalField(max_digits=15, decimal_places=2)
     balance_after = models.DecimalField(max_digits=15, decimal_places=2)
     description = models.CharField(max_length=255)
